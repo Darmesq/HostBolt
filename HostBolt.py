@@ -1,15 +1,16 @@
 """
-HostBolt - editor tip Notepad doar pentru fișierul hosts din Windows.
+HostBolt - a Notepad-style editor dedicated to the Windows hosts file.
 
-- Pornește automat ca Administrator (cere UAC dacă e nevoie).
-- 🔒 Blochează: atribut read-only + permisiune NTFS "deny write" pentru Everyone,
-  astfel încât nicio aplicație (ex. Adobe) să nu mai poată scrie în hosts.
-- 🔓 Deblochează: scoate permisiunea de blocare ca să poți edita.
-- 💾 Salvează: face întâi backup  hosts_AAAA-LL-ZZ_HH-MM-SS.bak  în același folder,
-  apoi scrie fișierul și golește cache-ul DNS.
-- 🔍 Căutare (Ctrl+F), cu verificare „domeniu exact”.
-- ⚙ Setări: font editor, temă (Implicită / Luminoasă / Întunecată), limbă (RO / EN).
-  Se salvează în settings.json lângă exe (sau în %APPDATA%\\HostBolt dacă folderul nu e scriibil).
+- Starts as Administrator automatically (asks for UAC elevation if needed).
+- Lock: read-only attribute + NTFS "deny write" permission for Everyone,
+  so no application (e.g. Adobe) can write to the hosts file anymore.
+  Reading the file stays allowed.
+- Unlock: removes the deny permission so the file can be edited again.
+- Save: first creates a backup  hosts_YYYY-MM-DD_HH-MM-SS.bak  in the same folder,
+  then writes the file and flushes the DNS cache.
+- Search (Ctrl+F) with an "exact domain" option.
+- Settings: editor font, theme (Default / Light / Dark), language (RO / EN).
+  Saved to settings.json next to the exe (or to %APPDATA%\\HostBolt if that folder is not writable).
 """
 
 import os
@@ -25,16 +26,23 @@ import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont
 
 APP = "HostBolt"
-VERSION = "1.1"
+VERSION = "1.1.1"
 HOSTS = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                      "System32", "drivers", "etc", "hosts")
-EVERYONE = "*S-1-1-0"          # SID-uri: merg și pe Windows în română
+EVERYONE = "*S-1-1-0"          # well-known SIDs: work on any Windows display language
 ADMINS = "*S-1-5-32-544"
 NO_WINDOW = 0x08000000         # CREATE_NO_WINDOW
 
+# Rights denied when locking. Only real write rights are listed on purpose:
+# the generic "W" right also includes SYNCHRONIZE, which Windows needs to open
+# a file for reading, so denying "W" made the hosts file unreadable (issue #3).
+LOCK_RIGHTS = "(WD,AD,WEA,WA,D,WDAC,WO)"
+
+KOFI = "https://ko-fi.com/darmesq"
+
 DEFAULT_SETTINGS = {"font_family": "Consolas", "font_size": 11, "theme": "default", "lang": "ro"}
 
-# ------------------------------------------------------------------ texte RO / EN
+# ------------------------------------------------------------------ UI strings (RO / EN)
 STRINGS = {
     "ro": {
         "menu_file": "Fișier", "menu_edit": "Editare", "menu_settings": "Setări",
@@ -42,24 +50,35 @@ STRINGS = {
         "exit": "Ieșire", "find_menu": "Caută…", "find_next": "Următorul", "find_prev": "Anteriorul",
         "settings_menu": "Preferințe…",
         "btn_lock": "🔒  Închide (Lock)", "btn_unlock": "🔓  Deschide (Unlock)",
-        "btn_save": "💾  Salvează", "btn_find": "🔍  Caută", "btn_settings": "⚙",
+        "btn_save": "💾  Salvează", "btn_find": "🔍  Caută", "btn_settings": "⚙", "btn_donate": "☕ Donează 3$ - o cafea",
         "find_label": "Caută:", "exact": "Domeniu exact", "add_blocked": "➕ Adaugă ca blocat",
         "found": "✔ EXISTĂ – {n} rezultate pe {lines} linii", "not_found": "✖ NU EXISTĂ în fișier",
         "state_locked": "🔒 BLOCAT – nimeni nu poate scrie", "state_unlocked": "🔓 DEBLOCAT – editabil",
+        "state_unreadable": "⚠ NECITIT – editare dezactivată",
         "title_locked": "BLOCAT", "title_unlocked": "deblocat",
         "locked_info": "Fișierul este blocat. Apasă întâi „Deschide (Unlock)”.",
         "added": "Adăugat „0.0.0.0 {d}” la final – apasă Salvează ca să se aplice.",
-        "read_err": "Nu pot citi hosts:\n{e}",
         "reload_q": "Ai modificări nesalvate. Le pierzi și reîncarci fișierul?",
-        "unlocked_st": "Deblocat. Poți edita fișierul.", "unlock_err": "Deblocarea a eșuat:\n{e}",
+        "unlocked_st": "Deblocat. Poți edita fișierul.", "unlock_err": "Deblocarea a eșuat.",
         "lock_save_q": "Ai modificări nesalvate. Le salvezi înainte de blocare?",
         "locked_st": "Blocat. Nicio aplicație nu mai poate modifica hosts.",
-        "lock_err": "Blocarea a eșuat:\n{e}", "save_err": "Salvarea a eșuat:\n{e}",
+        "lock_err": "Blocarea a eșuat.", "save_err": "Salvarea a eșuat.",
         "saved_st": "Salvat. Backup: {b}  •  cache DNS golit",
         "exit_save_q": "Salvezi modificările înainte de ieșire?",
         "exit_lock_q": "Fișierul hosts este DEBLOCAT.\nÎl blochezi înainte de ieșire?",
         "need_admin": "Aplicația are nevoie de drepturi de Administrator.",
-        # dialog setări
+        # read error dialog
+        "error_title": "Eroare",
+        "read_err_title": "Fișierul hosts nu poate fi citit",
+        "read_err_msg": "Windows a refuzat accesul la fișierul hosts. Cel mai probabil este "
+                        "blocat de o altă aplicație sau de un antivirus.\n\n"
+                        "Poți încerca din nou sau poți elimina blocarea și reîncerca.",
+        "details": "Detalii tehnice:",
+        "btn_retry": "Încearcă din nou", "btn_unlock_retry": "Deblochează și reîncearcă",
+        "btn_close": "Închide",
+        "not_loaded_st": "Fișierul hosts nu a putut fi citit – editarea și salvarea sunt dezactivate.",
+        "lock_upgraded_st": "Blocarea a fost actualizată la noul format. Fișierul rămâne protejat.",
+        # settings dialog
         "set_title": "Setări", "set_font": "Font editor", "set_family": "Font:", "set_size": "Mărime:",
         "set_mono": "Doar fonturi monospace", "set_preview": "Previzualizare:",
         "set_theme": "Temă", "theme_default": "Implicită (Windows)", "theme_light": "Luminoasă",
@@ -71,24 +90,33 @@ STRINGS = {
         "save": "Save", "reload": "Reload", "open_folder": "Open etc folder",
         "exit": "Exit", "find_menu": "Find…", "find_next": "Find next", "find_prev": "Find previous",
         "settings_menu": "Preferences…",
-        "btn_lock": "🔒  Lock", "btn_unlock": "🔓  Unlock",
-        "btn_save": "💾  Save", "btn_find": "🔍  Find", "btn_settings": "⚙",
+        "btn_lock": "🔒  Lock", "btn_unlock": "🔓  Unlock", "btn_donate": "☕ Donate $3 - a coffee",
         "find_label": "Find:", "exact": "Exact domain", "add_blocked": "➕ Add as blocked",
         "found": "✔ EXISTS – {n} matches on {lines} lines", "not_found": "✖ NOT in the file",
         "state_locked": "🔒 LOCKED – nothing can write", "state_unlocked": "🔓 UNLOCKED – editable",
+        "state_unreadable": "⚠ NOT LOADED – editing disabled",
         "title_locked": "LOCKED", "title_unlocked": "unlocked",
         "locked_info": "The file is locked. Click “Unlock” first.",
         "added": "Added “0.0.0.0 {d}” at the end – click Save to apply it.",
-        "read_err": "Cannot read hosts:\n{e}",
         "reload_q": "You have unsaved changes. Discard them and reload the file?",
-        "unlocked_st": "Unlocked. You can edit the file.", "unlock_err": "Unlock failed:\n{e}",
+        "unlocked_st": "Unlocked. You can edit the file.", "unlock_err": "Unlock failed.",
         "lock_save_q": "You have unsaved changes. Save them before locking?",
         "locked_st": "Locked. No application can modify hosts.",
-        "lock_err": "Lock failed:\n{e}", "save_err": "Save failed:\n{e}",
+        "lock_err": "Lock failed.", "save_err": "Save failed.",
         "saved_st": "Saved. Backup: {b}  •  DNS cache flushed",
         "exit_save_q": "Save your changes before exiting?",
         "exit_lock_q": "The hosts file is UNLOCKED.\nLock it before exiting?",
         "need_admin": "This application requires Administrator rights.",
+        "error_title": "Error",
+        "read_err_title": "The hosts file can't be read",
+        "read_err_msg": "Windows denied access to the hosts file. It is most likely "
+                        "locked by another application or by an antivirus.\n\n"
+                        "You can try again, or remove the lock and retry.",
+        "details": "Technical details:",
+        "btn_retry": "Try again", "btn_unlock_retry": "Unlock and retry",
+        "btn_close": "Close",
+        "not_loaded_st": "The hosts file could not be read – editing and saving are disabled.",
+        "lock_upgraded_st": "The lock was updated to the new format. The file is still protected.",
         "set_title": "Settings", "set_font": "Editor font", "set_family": "Font:", "set_size": "Size:",
         "set_mono": "Monospace fonts only", "set_preview": "Preview:",
         "set_theme": "Theme", "theme_default": "Default (Windows)", "theme_light": "Light",
@@ -97,9 +125,9 @@ STRINGS = {
     },
 }
 
-# ------------------------------------------------------------------ teme
+# ------------------------------------------------------------------ themes
 THEMES = {
-    "default": None,   # tema nativă Windows (vista)
+    "default": None,   # native Windows theme (vista)
     "light": {
         "bg": "#f5f6f8", "fg": "#1f2328", "muted": "#59636e",
         "text_bg": "#ffffff", "text_fg": "#1f2328", "locked_bg": "#eef0f3",
@@ -107,6 +135,7 @@ THEMES = {
         "entry_bg": "#ffffff", "btn_bg": "#e7eaee", "btn_active": "#d5dae1", "border": "#c9d1d9",
         "match": "#fff3a3", "current": "#ffb84d",
         "ok": "#1a7f37", "warn": "#b35900", "err": "#c62828",
+        "sb_trough": "#eef0f3", "sb_thumb": "#c4cad3", "sb_active": "#9aa3ae",
     },
     "dark": {
         "bg": "#1e1f22", "fg": "#e6e6e6", "muted": "#9aa0a6",
@@ -115,12 +144,15 @@ THEMES = {
         "entry_bg": "#2b2d31", "btn_bg": "#2f3136", "btn_active": "#3d4047", "border": "#45484f",
         "match": "#6b5a00", "current": "#b36b00",
         "ok": "#4ade80", "warn": "#fbbf24", "err": "#f87171",
+        "sb_trough": "#1e1f22", "sb_thumb": "#45484f", "sb_active": "#5c6069",
     },
 }
 DEFAULT_COLORS = {"text_bg": "white", "text_fg": "black", "locked_bg": "#f3f3f3",
                   "insert": "black", "sel_bg": "#cce4ff", "sel_fg": "black",
                   "match": "#fff3a3", "current": "#ffb84d",
-                  "ok": "#1a7f37", "warn": "#b35900", "err": "#c62828"}
+                  "ok": "#1a7f37", "warn": "#b35900", "err": "#c62828",
+                  "fg": "black", "muted": "#5f6368",
+                  "sb_trough": "#f0f0f0", "sb_thumb": "#c2c2c2", "sb_active": "#a6a6a6"}
 
 
 # ------------------------------------------------------------------ admin
@@ -140,8 +172,14 @@ def relaunch_as_admin():
     rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
     return rc > 32
 
+def open_url(url):
+    """Open a link via explorer.exe so the browser does NOT start as Administrator."""
+    try:
+        subprocess.Popen(["explorer.exe", url])
+    except OSError:
+        pass
 
-# ------------------------------------------------------------------ hosts
+# ------------------------------------------------------------------ hosts file
 def run(cmd):
     r = subprocess.run(cmd, capture_output=True, creationflags=NO_WINDOW)
     out = (r.stdout or b"") + (r.stderr or b"")
@@ -154,16 +192,16 @@ def is_locked():
 
 
 def lock():
-    # ordinea contează: atributul se pune ÎNAINTE de deny (deny blochează și atributele)
+    # order matters: set the attribute BEFORE the deny (the deny also blocks attribute changes)
     os.chmod(HOSTS, stat.S_IREAD)
     run(["icacls", HOSTS, "/setowner", ADMINS])
-    code, out = run(["icacls", HOSTS, "/deny", f"{EVERYONE}:(W,D,WDAC,WO)"])
+    code, out = run(["icacls", HOSTS, "/deny", f"{EVERYONE}:{LOCK_RIGHTS}"])
     if code != 0:
         raise RuntimeError(out.strip())
 
 
 def unlock():
-    # ordinea inversă: întâi scoatem deny, apoi atributul read-only
+    # reverse order: remove the deny first, then the read-only attribute
     code, out = run(["icacls", HOSTS, "/remove:d", EVERYONE])
     if code != 0:
         raise RuntimeError(out.strip())
@@ -188,7 +226,7 @@ def backup_hosts():
     return dst
 
 
-# ------------------------------------------------------------------ setări / resurse
+# ------------------------------------------------------------------ settings / resources
 def app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -196,12 +234,12 @@ def app_dir():
 
 
 def resource(name):
-    """Fișier inclus în exe (PyInstaller) sau aflat lângă script."""
+    """File bundled into the exe (PyInstaller) or located next to the script."""
     return os.path.join(getattr(sys, "_MEIPASS", app_dir()), name)
 
 
 def settings_path():
-    """Lângă exe (portabil); dacă folderul nu e scriibil -> %APPDATA%\\HostBolt."""
+    """Next to the exe (portable); if that folder is not writable -> %APPDATA%\\HostBolt."""
     local = os.path.join(app_dir(), "settings.json")
     try:
         with open(local, "a", encoding="utf-8"):
@@ -237,15 +275,15 @@ def save_settings(s):
 
 
 def set_dark_titlebar(win, dark):
-    """Bară de titlu întunecată pe Windows 10 (1809+) / 11."""
+    """Dark title bar on Windows 10 (1809+) / 11."""
     try:
         win.update_idletasks()
         hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
         val = ctypes.c_int(1 if dark else 0)
-        for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE (nou / vechi)
+        for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE (new / old value)
             if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), 4) == 0:
                 break
-        # forțează redesenarea barei de titlu
+        # force the title bar to redraw
         w, h = win.winfo_width(), win.winfo_height()
         if w > 1:
             win.geometry(f"{w + 1}x{h}")
@@ -254,7 +292,209 @@ def set_dark_titlebar(win, dark):
         pass
 
 
-# ------------------------------------------------------------------ fereastra principală
+def center_over(win, parent):
+    win.update_idletasks()
+    if parent.winfo_viewable():
+        x = parent.winfo_rootx() + (parent.winfo_width() - win.winfo_reqwidth()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - win.winfo_reqheight()) // 3
+    else:   # e.g. an error at startup, before the main window is shown: center on screen
+        x = (win.winfo_screenwidth() - win.winfo_reqwidth()) // 2
+        y = (win.winfo_screenheight() - win.winfo_reqheight()) // 3
+    win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+
+# ------------------------------------------------------------------ themed scrollbar
+class FlatScrollbar(tk.Canvas):
+    """Minimal scrollbar drawn on a Canvas, so its colors always follow the theme
+    (native Windows scrollbars ignore color settings; issue #2)."""
+
+    MIN_THUMB = 24
+    PAD = 2
+
+    def __init__(self, master, orient="vertical", command=None, thickness=12):
+        self.vertical = orient == "vertical"
+        size = {"width": thickness} if self.vertical else {"height": thickness}
+        super().__init__(master, highlightthickness=0, borderwidth=0, **size)
+        self.command = command
+        self.lo, self.hi = 0.0, 1.0
+        self.trough, self.thumb_color, self.active_color = "#f0f0f0", "#c2c2c2", "#a6a6a6"
+        self.thumb = self.create_rectangle(0, 0, 0, 0, outline="", fill=self.thumb_color)
+        self._span = self._size = 0.0
+        self._drag = None
+        self._hover = False
+        self.bind("<Configure>", self._redraw)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Motion>", self._on_motion)
+        self.bind("<Leave>", self._on_leave)
+        if self.vertical:
+            self.bind("<MouseWheel>", self._on_wheel)
+
+    # --- public API (same as a Tk scrollbar)
+    def set(self, lo, hi):
+        self.lo, self.hi = float(lo), float(hi)
+        self._redraw()
+
+    def get(self):
+        return self.lo, self.hi
+
+    def set_colors(self, trough, thumb, active):
+        self.trough, self.thumb_color, self.active_color = trough, thumb, active
+        self.configure(bg=trough)
+        self._paint()
+
+    # --- drawing
+    def _length(self):
+        return self.winfo_height() if self.vertical else self.winfo_width()
+
+    def _thickness(self):
+        return self.winfo_width() if self.vertical else self.winfo_height()
+
+    def _redraw(self, _e=None):
+        length = self._length()
+        if length <= 1:
+            return
+        span = max(1.0, length - 2 * self.PAD)
+        visible = max(0.0, min(1.0, self.hi - self.lo))
+        size = min(span, max(self.MIN_THUMB, visible * span))
+        if visible >= 1.0:
+            start = self.PAD
+        else:
+            start = self.PAD + (self.lo / (1.0 - visible)) * (span - size)
+        self._span, self._size = span, size
+        t = self._thickness()
+        edge = 3 if t > 8 else 1
+        if self.vertical:
+            self.coords(self.thumb, edge, start, t - edge, start + size)
+        else:
+            self.coords(self.thumb, start, edge, start + size, t - edge)
+        self._paint()
+
+    def _paint(self):
+        active = self._hover or self._drag is not None
+        self.itemconfigure(self.thumb, fill=self.active_color if active else self.thumb_color)
+
+    # --- interaction
+    def _pos(self, e):
+        return e.y if self.vertical else e.x
+
+    def _thumb_range(self):
+        x0, y0, x1, y1 = self.coords(self.thumb)
+        return (y0, y1) if self.vertical else (x0, x1)
+
+    def _on_press(self, e):
+        if not self.command:
+            return
+        a, b = self._thumb_range()
+        p = self._pos(e)
+        if a <= p <= b:
+            self._drag = (p, self.lo)
+            self._paint()
+        else:
+            self.command("scroll", -1 if p < a else 1, "pages")
+
+    def _on_drag(self, e):
+        if self._drag is None or not self.command:
+            return
+        start_pos, start_lo = self._drag
+        travel = self._span - self._size
+        if travel <= 0:
+            return
+        visible = self.hi - self.lo
+        new_lo = start_lo + (self._pos(e) - start_pos) / travel * (1.0 - visible)
+        self.command("moveto", max(0.0, min(1.0 - visible, new_lo)))
+
+    def _on_release(self, _e):
+        self._drag = None
+        self._paint()
+
+    def _on_motion(self, e):
+        a, b = self._thumb_range()
+        hover = a <= self._pos(e) <= b
+        if hover != self._hover:
+            self._hover = hover
+            self._paint()
+
+    def _on_leave(self, _e):
+        self._hover = False
+        self._paint()
+
+    def _on_wheel(self, e):
+        if self.command:
+            self.command("scroll", int(-e.delta / 120) * 3, "units")
+
+
+# ------------------------------------------------------------------ themed message dialog
+class MessageDialog(tk.Toplevel):
+    """A themed replacement for the plain error message box (issue #3).
+    Returns the key of the button the user clicked in .result."""
+
+    def __init__(self, app, title, message, details=None, kind="error", buttons=None):
+        super().__init__(app)
+        self.app = app
+        self.result = None
+        c = app.colors
+        bg = c.get("bg", "SystemButtonFace")
+        buttons = buttons or [("ok", app.t("ok"))]
+        self.cancel_key = buttons[-1][0]
+
+        self.withdraw()
+        self.title(APP)
+        self.resizable(False, False)
+        self.transient(app)
+        self.configure(bg=bg)
+        try:
+            self.iconbitmap(resource("HostBolt.ico"))
+        except tk.TclError:
+            pass
+
+        body = ttk.Frame(self, padding=(20, 18, 20, 14))
+        body.pack(fill="both", expand=True)
+
+        # icon: colored circle with a symbol
+        accent = {"error": c.get("err", "#c62828"), "warn": c.get("warn", "#b35900")}.get(kind, "#1a73e8")
+        symbol = {"error": "!", "warn": "!"}.get(kind, "i")
+        icon = tk.Canvas(body, width=40, height=40, highlightthickness=0, bg=bg)
+        icon.create_oval(2, 2, 38, 38, fill=accent, outline="")
+        icon.create_text(20, 20, text=symbol, fill="white", font=("Segoe UI", 16, "bold"))
+        icon.grid(row=0, column=0, rowspan=3, sticky="n", padx=(0, 16))
+
+        tk.Label(body, text=title, font=("Segoe UI", 12, "bold"), bg=bg,
+                 fg=c.get("fg", "black"), anchor="w", justify="left").grid(row=0, column=1, sticky="w")
+        if message:
+            tk.Label(body, text=message, font=("Segoe UI", 10), bg=bg, fg=c.get("fg", "black"),
+                     wraplength=380, anchor="w", justify="left").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        if details:
+            tk.Label(body, text=f"{app.t('details')}\n{details}", font=("Segoe UI", 8), bg=bg,
+                     fg=c.get("muted", "#5f6368"), wraplength=380, anchor="w",
+                     justify="left").grid(row=2, column=1, sticky="w", pady=(10, 0))
+
+        bar = ttk.Frame(body)
+        bar.grid(row=3, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        first = None
+        for key, label in reversed(buttons):
+            b = ttk.Button(bar, text=label, command=lambda k=key: self._close(k))
+            b.pack(side="right", padx=(6, 0))
+            first = b
+        self.bind("<Escape>", lambda e: self._close(self.cancel_key))
+        self.protocol("WM_DELETE_WINDOW", lambda: self._close(self.cancel_key))
+
+        center_over(self, app)
+        self.deiconify()
+        set_dark_titlebar(self, app.settings["theme"] == "dark")
+        self.grab_set()
+        if first is not None:
+            first.focus_set()
+        self.wait_window()
+
+    def _close(self, key):
+        self.result = key
+        self.grab_release()
+        self.destroy()
+
+
+# ------------------------------------------------------------------ main window
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -263,21 +503,22 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         self.geometry("880x600")
-        self.minsize(600, 360)
+        self.minsize(720, 360)
         self.encoding = "utf-8"
         self.locked = False
+        self.read_ok = True     # False if the hosts file could not be read: editing/saving disabled
         self.settings = load_settings()
         self.style = ttk.Style(self)
         self.native_theme = "vista" if "vista" in self.style.theme_names() else self.style.theme_use()
         self.colors = dict(DEFAULT_COLORS)
-        self.i18n = []          # (widget, cheie) pentru retraducere
+        self.i18n = []          # (widget, key) pairs to re-translate on language change
 
         self._build_ui()
         self.apply_settings()
         self.load()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    # ---------- utilitare
+    # ---------- helpers
     def t(self, key, **kw):
         s = STRINGS[self.settings["lang"]].get(key) or STRINGS["ro"][key]
         return s.format(**kw) if kw else s
@@ -287,9 +528,12 @@ class App(tk.Tk):
         widget.config(text=self.t(key))
         return widget
 
-    # ---------- interfață
+    def _error(self, key, exc):
+        MessageDialog(self, self.t(key), "", details=str(exc), kind="error")
+
+    # ---------- interface
     def _build_ui(self):
-        # bară de butoane
+        # toolbar
         bar = ttk.Frame(self, padding=(6, 6))
         bar.pack(fill="x")
         self.btn_lock = self._tr(ttk.Button(bar, command=self.do_lock), "btn_lock")
@@ -300,12 +544,13 @@ class App(tk.Tk):
         self.btn_save.pack(side="left")
         self._tr(ttk.Button(bar, command=self.show_find), "btn_find").pack(side="left", padx=6)
         self._tr(ttk.Button(bar, width=3, command=self.open_settings), "btn_settings").pack(side="left")
+        self._tr(ttk.Button(bar, command=lambda: open_url(KOFI)), "btn_donate").pack(side="left", padx=(6, 0))   
         self.state_lbl = tk.Label(bar, font=("Segoe UI", 10, "bold"), padx=10)
         self.state_lbl.pack(side="right")
 
-        # bară de căutare (ascunsă până la Ctrl+F)
+        # search bar (hidden until Ctrl+F)
         self.findbar = ttk.Frame(self, padding=(6, 0, 6, 6))
-        # butonul ✕ se împachetează primul, ca să nu fie împins afară când fereastra e îngustă
+        # the ✕ button is packed first so it isn't pushed out when the window is narrow
         ttk.Button(self.findbar, text="✕", width=3, command=self.hide_find).pack(side="right")
         self._tr(ttk.Label(self.findbar), "find_label").pack(side="left")
         self.find_var = tk.StringVar()
@@ -329,23 +574,24 @@ class App(tk.Tk):
         self.matches = []
         self.match_idx = -1
 
-        # zona de text
-        frame = ttk.Frame(self)
+        # text area
+        frame = tk.Frame(self, highlightthickness=0, borderwidth=0)
         frame.pack(fill="both", expand=True)
         self.text_frame = frame
         self.editor_font = tkfont.Font(family="Consolas", size=11)
         self.text = tk.Text(frame, wrap="none", undo=True, font=self.editor_font,
                             relief="flat", borderwidth=0, padx=6, pady=4, highlightthickness=0)
-        ys = ttk.Scrollbar(frame, orient="vertical", command=self.text.yview)
-        xs = ttk.Scrollbar(frame, orient="horizontal", command=self.text.xview)
-        self.text.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        self.ys = FlatScrollbar(frame, orient="vertical", command=self.text.yview)
+        self.xs = FlatScrollbar(frame, orient="horizontal", command=self.text.xview)
+        self.text.configure(yscrollcommand=self.ys.set, xscrollcommand=self._xscroll_set)
         self.text.grid(row=0, column=0, sticky="nsew")
-        ys.grid(row=0, column=1, sticky="ns")
-        xs.grid(row=1, column=0, sticky="ew")
+        self.ys.grid(row=0, column=1, sticky="ns")
+        self.xs.grid(row=1, column=0, sticky="ew")
+        self.xs.grid_remove()       # shown only when a line is wider than the editor (issue #1)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        # bară de stare
+        # status bar
         self.status = tk.StringVar()
         self.pos = tk.StringVar(value="Ln 1, Col 1")
         sb = ttk.Frame(self, padding=(6, 2))
@@ -362,6 +608,15 @@ class App(tk.Tk):
         self.text.bind("<<Modified>>", self._on_modified)
         for ev in ("<KeyRelease>", "<ButtonRelease-1>"):
             self.text.bind(ev, self._update_pos)
+
+    def _xscroll_set(self, lo, hi):
+        """Show the horizontal scrollbar only when the content is wider than the editor."""
+        lo, hi = float(lo), float(hi)
+        if lo <= 0.0 and hi >= 1.0:
+            self.xs.grid_remove()
+        else:
+            self.xs.grid()
+        self.xs.set(lo, hi)
 
     def _build_menu(self):
         menu = tk.Menu(self)
@@ -381,7 +636,7 @@ class App(tk.Tk):
         sm = tk.Menu(menu, tearoff=0)
         sm.add_command(label=self.t("settings_menu"), accelerator="Ctrl+,", command=self.open_settings)
         sm.add_separator()
-        # comutare rapidă temă / limbă direct din meniu
+        # quick theme / language switching straight from the menu
         self.menu_theme = tk.StringVar(value=self.settings["theme"])
         self.menu_lang = tk.StringVar(value=self.settings["lang"])
         for key in ("default", "light", "dark"):
@@ -399,12 +654,12 @@ class App(tk.Tk):
         save_settings(self.settings)
         self.apply_settings()
 
-    # ---------- aplicare setări
+    # ---------- applying settings
     def apply_settings(self):
         s = self.settings
-        # font editor
+        # editor font
         self.editor_font.configure(family=s["font_family"], size=int(s["font_size"]))
-        # temă
+        # theme
         pal = THEMES[s["theme"]]
         if pal is None:
             self.style.theme_use(self.native_theme)
@@ -422,8 +677,11 @@ class App(tk.Tk):
         self.text.tag_raise("current")
         for lbl in (self.state_lbl, self.find_result):
             lbl.configure(bg=self.colors["bg"])
+        self.text_frame.configure(bg=self.colors["sb_trough"])
+        for sb in (self.ys, self.xs):
+            sb.set_colors(self.colors["sb_trough"], self.colors["sb_thumb"], self.colors["sb_active"])
         set_dark_titlebar(self, s["theme"] == "dark")
-        # limbă
+        # language
         for widget, key in self.i18n:
             widget.config(text=self.t(key))
         self._build_menu()
@@ -460,24 +718,18 @@ class App(tk.Tk):
                selectforeground=[("readonly", p["fg"])])
         st.configure("TSpinbox", fieldbackground=p["entry_bg"], foreground=p["fg"],
                      background=p["btn_bg"], arrowcolor=p["fg"])
-        st.configure("Vertical.TScrollbar", background=p["btn_bg"], troughcolor=p["bg"],
-                     arrowcolor=p["fg"], bordercolor=p["bg"], lightcolor=p["btn_bg"],
-                     darkcolor=p["btn_bg"], gripcount=0)
-        st.configure("Horizontal.TScrollbar", background=p["btn_bg"], troughcolor=p["bg"],
-                     arrowcolor=p["fg"], bordercolor=p["bg"], lightcolor=p["btn_bg"],
-                     darkcolor=p["btn_bg"], gripcount=0)
         self.configure(bg=p["bg"])
-        # lista derulantă a combobox-urilor
+        # drop-down list of the comboboxes
         self.option_add("*TCombobox*Listbox.background", p["entry_bg"])
         self.option_add("*TCombobox*Listbox.foreground", p["fg"])
         self.option_add("*TCombobox*Listbox.selectBackground", p["sel_bg"])
         self.option_add("*TCombobox*Listbox.selectForeground", p["sel_fg"])
 
-    # ---------- dialog setări
+    # ---------- settings dialog
     def open_settings(self):
         SettingsDialog(self)
 
-    # ---------- căutare
+    # ---------- search
     def show_find(self):
         if not self.findbar.winfo_ismapped():
             self.findbar.pack(fill="x", before=self.text_frame)
@@ -508,6 +760,7 @@ class App(tk.Tk):
             return
         flags = 0 if self.case_var.get() else re.IGNORECASE
         if self.exact_var.get():
+            # the domain as a separate entry (not part of another domain); commented lines are ignored
             pat = re.compile(r"(?<![\w.\-])" + re.escape(term.rstrip(".")) + r"\.?(?![\w.\-])", flags)
         else:
             pat = re.compile(re.escape(term), flags)
@@ -522,6 +775,7 @@ class App(tk.Tk):
         if self.matches:
             lines = len({a.split(".")[0] for a, _ in self.matches})
             self.find_result.config(fg=self.colors["ok"], text=self.t("found", n=len(self.matches), lines=lines))
+            # jump to the first match after the cursor
             cur = self.text.index("insert")
             self.match_idx = next((i for i, (a, _) in enumerate(self.matches)
                                    if self.text.compare(a, ">=", cur)), 0)
@@ -557,8 +811,8 @@ class App(tk.Tk):
 
     def add_from_find(self):
         term = self.find_var.get().strip().rstrip(".").lower()
-        if self.locked:
-            messagebox.showinfo(APP, self.t("locked_info"))
+        if self.locked or not self.read_ok:
+            MessageDialog(self, self.t("locked_info"), "", kind="warn")
             return
         end_text = self.text.get("end-2c", "end-1c")
         prefix = "" if end_text in ("", "\n") else "\n"
@@ -567,7 +821,7 @@ class App(tk.Tk):
         self.status.set(self.t("added", d=term))
         self.run_find()
 
-    # ---------- stare
+    # ---------- state
     def _on_modified(self, _e=None):
         self._update_title()
 
@@ -582,11 +836,18 @@ class App(tk.Tk):
         star = "*" if self._modified() else ""
         lock_txt = self.t("title_locked") if self.locked else self.t("title_unlocked")
         self.title(f"{star}hosts — {APP} {VERSION} ({lock_txt})")
-        
+
     def _refresh_state(self, check=True):
         if check:
             self.locked = is_locked()
-        if self.locked:
+        if not self.read_ok:
+            # the file could not be read: never allow saving an empty editor over it
+            self.state_lbl.config(text=self.t("state_unreadable"), fg=self.colors["err"])
+            self.text.config(state="disabled", bg=self.colors["locked_bg"])
+            self.btn_lock.state(["!disabled" if not self.locked else "disabled"])
+            self.btn_unlock.state(["!disabled" if self.locked else "disabled"])
+            self.btn_save.state(["disabled"])
+        elif self.locked:
             self.state_lbl.config(text=self.t("state_locked"), fg=self.colors["ok"])
             self.text.config(state="disabled", bg=self.colors["locked_bg"])
             self.btn_lock.state(["disabled"])
@@ -600,19 +861,61 @@ class App(tk.Tk):
             self.btn_save.state(["!disabled"])
         self._update_title()
 
-    # ---------- acțiuni
-    def load(self):
+    # ---------- actions
+    @staticmethod
+    def _try_read():
         try:
-            content, self.encoding = read_hosts()
+            return read_hosts(), None
         except OSError as e:
-            messagebox.showerror(APP, self.t("read_err", e=e))
-            content = ""
+            return None, e
+
+    def load(self):
+        result, err = self._try_read()
+        upgraded = False
+
+        # A file locked by an older HostBolt version (which also denied SYNCHRONIZE)
+        # can't be read. Re-apply the lock in the new format: still protected, but readable.
+        if isinstance(err, PermissionError) and is_locked():
+            try:
+                unlock()
+                lock()
+                upgraded = True
+            except Exception:
+                pass
+            result, err = self._try_read()
+
+        # still unreadable: ask the user what to do, with a clear, themed dialog
+        while err is not None:
+            dlg = MessageDialog(
+                self, self.t("read_err_title"), self.t("read_err_msg"), details=str(err), kind="error",
+                buttons=[("retry", self.t("btn_retry")),
+                         ("unlock", self.t("btn_unlock_retry")),
+                         ("close", self.t("btn_close"))])
+            if dlg.result == "retry":
+                result, err = self._try_read()
+            elif dlg.result == "unlock":
+                try:
+                    unlock()
+                except Exception as e:
+                    self._error("unlock_err", e)
+                result, err = self._try_read()
+            else:
+                break
+
+        self.read_ok = err is None
+        content, enc = result if result else ("", self.encoding)
+        self.encoding = enc
         self.text.config(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", content.replace("\r\n", "\n"))
         self.text.edit_reset()
         self.text.edit_modified(False)
-        self.status.set(HOSTS)
+        if not self.read_ok:
+            self.status.set(self.t("not_loaded_st"))
+        elif upgraded:
+            self.status.set(self.t("lock_upgraded_st"))
+        else:
+            self.status.set(HOSTS)
         self._refresh_state()
 
     def reload(self):
@@ -625,7 +928,10 @@ class App(tk.Tk):
             unlock()
             self.status.set(self.t("unlocked_st"))
         except Exception as e:
-            messagebox.showerror(APP, self.t("unlock_err", e=e))
+            self._error("unlock_err", e)
+        if not self.read_ok:
+            self.load()     # unlocking may make the file readable again
+            return
         self._refresh_state()
 
     def do_lock(self):
@@ -641,12 +947,12 @@ class App(tk.Tk):
             lock()
             self.status.set(self.t("locked_st"))
         except Exception as e:
-            messagebox.showerror(APP, self.t("lock_err", e=e))
+            self._error("lock_err", e)
         self._refresh_state()
 
     def save(self):
-        if self.locked:
-            messagebox.showinfo(APP, self.t("locked_info"))
+        if self.locked or not self.read_ok:
+            MessageDialog(self, self.t("locked_info"), "", kind="warn")
             return False
         content = self.text.get("1.0", "end-1c")
         try:
@@ -656,7 +962,7 @@ class App(tk.Tk):
                 f.write(content)
             run(["ipconfig", "/flushdns"])
         except Exception as e:
-            messagebox.showerror(APP, self.t("save_err", e=e))
+            self._error("save_err", e)
             return False
         self.text.edit_modified(False)
         self._update_title()
@@ -677,11 +983,11 @@ class App(tk.Tk):
             try:
                 lock()
             except Exception as e:
-                messagebox.showerror(APP, self.t("lock_err", e=e))
+                self._error("lock_err", e)
         self.destroy()
 
 
-# ------------------------------------------------------------------ dialog Setări
+# ------------------------------------------------------------------ Settings dialog
 class SettingsDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app)
@@ -707,7 +1013,7 @@ class SettingsDialog(tk.Toplevel):
         self.bind("<Escape>", lambda e: self.cancel())
         self.bind("<Return>", lambda e: self.ok())
         self.protocol("WM_DELETE_WINDOW", self.cancel)
-        # centrat peste fereastra principală
+        # centered over the main window
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
         y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
@@ -740,14 +1046,14 @@ class SettingsDialog(tk.Toplevel):
         self.size.trace_add("write", lambda *a: self._preview())
         self._fill_fonts()
 
-        # --- temă
+        # --- theme
         tf = ttk.LabelFrame(body, text=t("set_theme"), padding=10)
         tf.grid(row=1, column=0, sticky="nsew", pady=(10, 0), padx=(0, 5))
         for key in ("default", "light", "dark"):
             ttk.Radiobutton(tf, text=t(f"theme_{key}"), value=key, variable=self.theme
                             ).pack(anchor="w", pady=1)
 
-        # --- limbă
+        # --- language
         lf = ttk.LabelFrame(body, text=t("set_lang"), padding=10)
         lf.grid(row=1, column=1, sticky="nsew", pady=(10, 0), padx=(5, 0))
         for key in ("ro", "en"):
@@ -756,7 +1062,7 @@ class SettingsDialog(tk.Toplevel):
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
 
-        # --- butoane
+        # --- buttons
         bb = ttk.Frame(body)
         bb.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         ttk.Button(bb, text=t("reset"), command=self.reset).pack(side="left")
@@ -805,7 +1111,7 @@ class SettingsDialog(tk.Toplevel):
         save_settings(self.app.settings)
         self.app.apply_settings()
         if lang_changed or theme_changed:
-            # redeschide dialogul în noua limbă / temă
+            # reopen the dialog in the new language / theme
             self.grab_release()
             self.destroy()
             d = SettingsDialog(self.app)
@@ -837,7 +1143,7 @@ class SettingsDialog(tk.Toplevel):
 
 if __name__ == "__main__":
     if sys.platform != "win32":
-        sys.exit("HostBolt runs on Windows only / rulează doar pe Windows.")
+        sys.exit("HostBolt runs on Windows only.")
     if not is_admin():
         if not relaunch_as_admin():
             lang = load_settings()["lang"]
