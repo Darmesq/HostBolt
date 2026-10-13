@@ -26,7 +26,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont
 
 APP = "HostBolt"
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 HOSTS = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                      "System32", "drivers", "etc", "hosts")
 EVERYONE = "*S-1-1-0"          # well-known SIDs: work on any Windows display language
@@ -40,7 +40,7 @@ LOCK_RIGHTS = "(WD,AD,WEA,WA,D,WDAC,WO)"
 
 KOFI = "https://ko-fi.com/darmesq"
 
-DEFAULT_SETTINGS = {"font_family": "Consolas", "font_size": 11, "theme": "default", "lang": "ro"}
+DEFAULT_SETTINGS = {"font_family": "Consolas", "font_size": 11, "theme": "default", "lang": "en"}
 
 # ------------------------------------------------------------------ UI strings (RO / EN)
 STRINGS = {
@@ -50,7 +50,7 @@ STRINGS = {
         "exit": "Ieșire", "find_menu": "Caută…", "find_next": "Următorul", "find_prev": "Anteriorul",
         "settings_menu": "Preferințe…",
         "btn_lock": "🔒  Închide (Lock)", "btn_unlock": "🔓  Deschide (Unlock)",
-        "btn_save": "💾  Salvează", "btn_find": "🔍  Caută", "btn_settings": "⚙", "btn_donate": "☕ Donează 3$ - o cafea",
+        "btn_save": "💾  Salvează", "btn_find": "🔍  Caută", "btn_settings": "⚙", "btn_donate": "☕ Donează 4$ - o cafea",
         "find_label": "Caută:", "exact": "Domeniu exact", "add_blocked": "➕ Adaugă ca blocat",
         "found": "✔ EXISTĂ – {n} rezultate pe {lines} linii", "not_found": "✖ NU EXISTĂ în fișier",
         "state_locked": "🔒 BLOCAT – nimeni nu poate scrie", "state_unlocked": "🔓 DEBLOCAT – editabil",
@@ -90,7 +90,7 @@ STRINGS = {
         "save": "Save", "reload": "Reload", "open_folder": "Open etc folder",
         "exit": "Exit", "find_menu": "Find…", "find_next": "Find next", "find_prev": "Find previous",
         "settings_menu": "Preferences…",
-        "btn_lock": "🔒  Lock", "btn_unlock": "🔓  Unlock", "btn_donate": "☕ Donate $3 - a coffee",
+        "btn_lock": "🔒  Lock", "btn_unlock": "🔓  Unlock", "btn_donate": "☕ Donate $4 - a coffee",
         "find_label": "Find:", "exact": "Exact domain", "add_blocked": "➕ Add as blocked",
         "found": "✔ EXISTS – {n} matches on {lines} lines", "not_found": "✖ NOT in the file",
         "state_locked": "🔒 LOCKED – nothing can write", "state_unlocked": "🔓 UNLOCKED – editable",
@@ -262,7 +262,7 @@ def load_settings():
     if s["theme"] not in THEMES:
         s["theme"] = "default"
     if s["lang"] not in STRINGS:
-        s["lang"] = "ro"
+        s["lang"] = "en"
     return s
 
 
@@ -291,6 +291,15 @@ def set_dark_titlebar(win, dark):
     except Exception:
         pass
 
+def windows_uses_dark_mode():
+    """True if Windows is set to dark mode for apps (Settings > Personalization > Colors)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+    except OSError:
+        return False
 
 def center_over(win, parent):
     win.update_idletasks()
@@ -482,7 +491,7 @@ class MessageDialog(tk.Toplevel):
 
         center_over(self, app)
         self.deiconify()
-        set_dark_titlebar(self, app.settings["theme"] == "dark")
+        set_dark_titlebar(self, app.dark)
         self.grab_set()
         if first is not None:
             first.focus_set()
@@ -619,21 +628,48 @@ class App(tk.Tk):
         self.xs.set(lo, hi)
 
     def _build_menu(self):
-        menu = tk.Menu(self)
-        fm = tk.Menu(menu, tearoff=0)
+        """In-window menu bar. The native Windows menu bar can't be recolored,
+        so it stayed white in the dark theme."""
+        c = self.colors
+        bg = c.get("bg", "SystemButtonFace")
+        fg = c.get("fg", "black")
+        hover = c.get("btn_active", "#cce4f7")
+        popup = dict(tearoff=0, bg=c.get("entry_bg", "white"), fg=fg,
+                     activebackground=c.get("sel_bg", "#cce4ff"),
+                     activeforeground=c.get("sel_fg", "black"),
+                     selectcolor=fg, relief="flat", borderwidth=1)
+
+        self.config(menu="")    # remove the native menu bar
+        if getattr(self, "menubar", None) is None:
+            self.menubar = tk.Frame(self, bd=0, highlightthickness=0)
+            self.menubar.pack(side="top", fill="x", before=self.pack_slaves()[0])
+        for w in self.menubar.winfo_children():
+            w.destroy()
+        self.menubar.configure(bg=bg)
+
+        def cascade(key):
+            mb = tk.Menubutton(self.menubar, text=self.t(key), bg=bg, fg=fg,
+                               activebackground=hover, activeforeground=fg,
+                               relief="flat", bd=0, padx=8, pady=3, highlightthickness=0)
+            menu = tk.Menu(mb, **popup)
+            mb["menu"] = menu
+            mb.pack(side="left")
+            return menu
+
+        fm = cascade("menu_file")
         fm.add_command(label=self.t("save"), accelerator="Ctrl+S", command=self.save)
         fm.add_command(label=self.t("reload"), accelerator="F5", command=self.reload)
         fm.add_separator()
         fm.add_command(label=self.t("open_folder"), command=self.open_folder)
         fm.add_separator()
         fm.add_command(label=self.t("exit"), command=self.on_close)
-        menu.add_cascade(label=self.t("menu_file"), menu=fm)
-        em = tk.Menu(menu, tearoff=0)
+
+        em = cascade("menu_edit")
         em.add_command(label=self.t("find_menu"), accelerator="Ctrl+F", command=self.show_find)
         em.add_command(label=self.t("find_next"), accelerator="F3", command=lambda: self.find_step(1))
         em.add_command(label=self.t("find_prev"), accelerator="Shift+F3", command=lambda: self.find_step(-1))
-        menu.add_cascade(label=self.t("menu_edit"), menu=em)
-        sm = tk.Menu(menu, tearoff=0)
+
+        sm = cascade("menu_settings")
         sm.add_command(label=self.t("settings_menu"), accelerator="Ctrl+,", command=self.open_settings)
         sm.add_separator()
         # quick theme / language switching straight from the menu
@@ -646,8 +682,6 @@ class App(tk.Tk):
         for key in ("ro", "en"):
             sm.add_radiobutton(label=self.t(f"lang_{key}"), variable=self.menu_lang, value=key,
                                command=lambda: self._quick_set("lang", self.menu_lang.get()))
-        menu.add_cascade(label=self.t("menu_settings"), menu=sm)
-        self.config(menu=menu)
 
     def _quick_set(self, key, value):
         self.settings[key] = value
@@ -660,7 +694,11 @@ class App(tk.Tk):
         # editor font
         self.editor_font.configure(family=s["font_family"], size=int(s["font_size"]))
         # theme
-        pal = THEMES[s["theme"]]
+        # "Default" follows the Windows app mode: dark Windows -> dark palette
+        effective = "dark" if s["theme"] == "default" and windows_uses_dark_mode() else s["theme"]
+        self.dark = effective == "dark"
+        pal = THEMES[effective]   
+        
         if pal is None:
             self.style.theme_use(self.native_theme)
             self.colors = dict(DEFAULT_COLORS)
@@ -680,7 +718,7 @@ class App(tk.Tk):
         self.text_frame.configure(bg=self.colors["sb_trough"])
         for sb in (self.ys, self.xs):
             sb.set_colors(self.colors["sb_trough"], self.colors["sb_thumb"], self.colors["sb_active"])
-        set_dark_titlebar(self, s["theme"] == "dark")
+        set_dark_titlebar(self, self.dark)
         # language
         for widget, key in self.i18n:
             widget.config(text=self.t(key))
@@ -1008,7 +1046,7 @@ class SettingsDialog(tk.Toplevel):
         self._mono_fonts = None
 
         self._build()
-        set_dark_titlebar(self, s["theme"] == "dark")
+        set_dark_titlebar(self, self.app.dark)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.cancel())
         self.bind("<Return>", lambda e: self.ok())
